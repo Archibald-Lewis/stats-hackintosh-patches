@@ -1,0 +1,473 @@
+diff --git a/Modules/CPU/main.swift b/Modules/CPU/main.swift
+index 65e63cf..1e7d6a7 100644
+--- a/Modules/CPU/main.swift
++++ b/Modules/CPU/main.swift
+@@ -151,20 +151,21 @@ public class CPU: Module {
+             self?.popupView.averageCallback(value)
+             self?.previewView.averageCallback(value)
+         }
+-        self.temperatureReader = TemperatureReader(.CPU, popup: true) { [weak self] value in
++        self.temperatureReader = TemperatureReader(.CPU, popup: !UserDefaults.standard.bool(forKey: "VK03PanelExport")) { [weak self] value in
+             self?.popupView.temperatureCallback(value)
++            if let value { exportVK03("cpu-temperature", ["celsius": value]) }
+         }
+         
+         #if arch(x86_64)
+         self.limitReader = LimitReader(.CPU, popup: true) { [weak self] value in
+             self?.popupView.limitCallback(value)
+         }
+-        #else
++        #endif
+         self.frequencyReader = FrequencyReader(.CPU) { [weak self] value in
+             self?.popupView.frequencyCallback(value)
+             self?.previewView.frequencyCallback(value)
++            if let frequency = value?.value { exportVK03("cpu-frequency", ["ghz": frequency / 1000]) }
+         }
+-        #endif
+         
+         self.settingsView.callback = { [weak self] in
+             self?.loadReader?.read()
+@@ -196,6 +197,8 @@ public class CPU: Module {
+     
+     private func loadCallback(_ raw: CPU_Load?) {
+         guard let value = raw, self.enabled else { return }
++        exportVK03("cpu-load", ["usage": value.totalUsage])
++        exportVK03Specs()
+         
+         self.popupView.loadCallback(value)
+         self.portalView.callback(value)
+@@ -267,3 +270,37 @@ public class CPU: Module {
+         }
+     }
+ }
++
++// Local telemetry export for the user's USB monitoring panel.
++private func exportVK03(_ name: String, _ values: [String: Double]) {
++    guard UserDefaults.standard.bool(forKey: "VK03PanelExport"), values.values.allSatisfy({ $0.isFinite }) else { return }
++    let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
++        .appendingPathComponent("Stats/VK03Panel", isDirectory: true)
++    do {
++        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
++        var payload = values
++        payload["timestamp"] = Date().timeIntervalSince1970
++        let bytes = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
++        try bytes.write(to: directory.appendingPathComponent(name + ".json"), options: .atomic)
++    } catch { /* A disconnected panel must never interrupt Stats. */ }
++}
++
++private var lastVK03SpecsExport = Date.distantPast
++private func exportVK03Specs() {
++    guard UserDefaults.standard.bool(forKey: "VK03PanelExport"), Date().timeIntervalSince(lastVK03SpecsExport) > 15 else { return }
++    let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
++        .appendingPathComponent("Stats/VK03Panel", isDirectory: true)
++    do {
++        var profile: [String: Any] = ["timestamp": Date().timeIntervalSince1970]
++        if let cpu = SystemKit.shared.device.info.cpu {
++            profile["cpu"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(cpu))
++        }
++        if let ram = SystemKit.shared.device.info.ram {
++            profile["ram"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(ram))
++        }
++        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
++        try JSONSerialization.data(withJSONObject: profile, options: [.sortedKeys])
++            .write(to: directory.appendingPathComponent("hardware.json"), options: .atomic)
++        lastVK03SpecsExport = Date()
++    } catch { }
++}
+diff --git a/Modules/CPU/popup.swift b/Modules/CPU/popup.swift
+index cd90570..3b7085c 100644
+--- a/Modules/CPU/popup.swift
++++ b/Modules/CPU/popup.swift
+@@ -470,11 +470,11 @@ internal class Popup: PopupWrapper {
+                 self.maxFreq = v
+             }
+             
+-            self.coresFreqField?.stringValue = "\(Int(v)) MHz"
++            self.coresFreqField?.stringValue = String(format: "%.2f GHz", v / 1000)
+             if let circle = self.frequencyCircle {
+-                circle.setValue((100*v)/self.maxFreq)
++                circle.setValue(v / self.maxFreq)
+                 circle.setText("\((v/1000).rounded(toPlaces: 2))")
+-                circle.toolTip = "\(localizedString("CPU frequency")): \(Int(v)) MHz - \(((100*v)/self.maxFreq).rounded(toPlaces: 2))%"
++                circle.toolTip = "\(localizedString("CPU frequency")): \(String(format: "%.2f GHz", v / 1000))"
+                 circle.display()
+             }
+         }
+diff --git a/Modules/CPU/preview.swift b/Modules/CPU/preview.swift
+index e088391..93e5d21 100644
+--- a/Modules/CPU/preview.swift
++++ b/Modules/CPU/preview.swift
+@@ -378,7 +378,7 @@ internal class Preview: PreviewWrapper {
+         DispatchQueue.main.async(execute: {
+             if (self.window?.isVisible ?? false) || !self.initializedFrequency {
+                 if let v = value.value {
+-                    self.coresFreqField?.stringValue = "\(Int(v)) MHz"
++                    self.coresFreqField?.stringValue = String(format: "%.2f GHz", v / 1000)
+                 }
+                 if let v = value.eCore {
+                     self.eCoresFreqField?.stringValue = "\(Int(v)) MHz"
+diff --git a/Modules/CPU/readers.swift b/Modules/CPU/readers.swift
+index f7fcf7d..482c496 100644
+--- a/Modules/CPU/readers.swift
++++ b/Modules/CPU/readers.swift
+@@ -11,6 +11,7 @@
+ 
+ import Cocoa
+ import Kit
++import IOKit
+ 
+ internal class LoadReader: Reader<CPU_Load> {
+     private var cpuInfo: processor_info_array_t!
+@@ -259,7 +260,7 @@ public class TemperatureReader: Reader<Double> {
+     var list: [String] = []
+     
+     public override func setup() {
+-        self.popup = true
++        self.popup = !UserDefaults.standard.bool(forKey: "VK03PanelExport")
+         switch SystemKit.shared.device.platform {
+         case .m1, .m1Pro, .m1Max, .m1Ultra:
+             self.list = ["Tp09", "Tp0T", "Tp01", "Tp05", "Tp0D", "Tp0H", "Tp0L", "Tp0P", "Tp0X", "Tp0b"]
+@@ -308,6 +309,49 @@ public class TemperatureReader: Reader<Double> {
+ 
+ // inspired by https://github.com/shank03/StatsBar/blob/e175aa71c914ce882ce2e90163f3eb18262a8e25/StatsBar/Service/IOReport.swift
+ public class FrequencyReader: Reader<CPU_Frequency> {
++    #if arch(x86_64)
++    private var amdConnection: io_connect_t = 0
++    private var amdFamily: Int64 = 0
++    private let amdReadLock = NSLock()
++
++    deinit {
++        if self.amdConnection != 0 { IOServiceClose(self.amdConnection) }
++    }
++
++    private func readAMDClock() -> Double? {
++        self.amdReadLock.lock()
++        defer { self.amdReadLock.unlock() }
++        guard self.amdConnection != 0 else { return nil }
++
++        // SMCProcessorAMD selector 2 only copies its existing, once-per-second
++        // per-core MSRC001_0293 cache. No MSR address or write command is sent.
++        var coreCount: UInt64 = 0
++        var scalarCount: UInt32 = 1
++        var registers = [UInt64](repeating: 0, count: 64)
++        var outputSize = registers.count * MemoryLayout<UInt64>.size
++        let result = registers.withUnsafeMutableBytes { buffer in
++            IOConnectCallMethod(self.amdConnection, 2, nil, 0, nil, 0,
++                                &coreCount, &scalarCount, buffer.baseAddress, &outputSize)
++        }
++        guard result == KERN_SUCCESS, scalarCount == 1, coreCount > 0,
++              coreCount <= UInt64(registers.count), outputSize == Int(coreCount) * 8 else { return nil }
++
++        let frequencies = registers.prefix(Int(coreCount)).compactMap { value -> Double? in
++            let frequency: Double
++            if self.amdFamily == 0x1A {
++                // Zen 5: CurCpuFid[11:0] * 5 MHz, as in LibreHardwareMonitor.
++                frequency = Double(value & 0xfff) * 5
++            } else {
++                let divider = (value >> 8) & 0x3f
++                guard divider != 0 else { return nil }
++                frequency = Double(value & 0xff) / Double(divider) * 200
++            }
++            return (200...10000).contains(frequency) ? frequency : nil
++        }
++        guard !frequencies.isEmpty else { return nil }
++        return frequencies.reduce(0, +) / Double(frequencies.count)
++    }
++    #endif
+     private var eCoreFreqs: [Int32] = []
+     private var pCoreFreqs: [Int32] = []
+     private var sCoreFreqs: [Int32] = []
+@@ -337,8 +381,20 @@ public class FrequencyReader: Reader<CPU_Frequency> {
+     }
+     
+     public override func setup() {
+-        self.popup = true
+-        self.preview = true
++        let panelExport = UserDefaults.standard.bool(forKey: "VK03PanelExport")
++        self.popup = !panelExport
++        self.preview = !panelExport
++        #if arch(x86_64)
++        self.amdFamily = sysctlByName("machdep.cpu.family")
++        if [0x17, 0x19, 0x1A].contains(self.amdFamily) {
++            let service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("SMCProcessorAMD"))
++            if service != 0 {
++                defer { IOObjectRelease(service) }
++                let result = IOServiceOpen(service, mach_task_self_, 0, &self.amdConnection)
++                if result != KERN_SUCCESS { self.amdConnection = 0 }
++            }
++        }
++        #else
+         self.eCoreFreqs = SystemKit.shared.device.info.cpu?.eCoreFrequencies ?? []
+         self.pCoreFreqs = SystemKit.shared.device.info.cpu?.pCoreFrequencies ?? []
+         self.sCoreFreqs = SystemKit.shared.device.info.cpu?.sCoreFrequencies ?? []
+@@ -349,9 +405,20 @@ public class FrequencyReader: Reader<CPU_Frequency> {
+         var dict: Unmanaged<CFMutableDictionary>?
+         self.subscription = IOReportCreateSubscription(nil, self.channels, &dict, 0, nil)
+         dict?.release()
++        #endif
+     }
+     
+     public override func read() {
++        #if arch(x86_64)
++        if let frequency = self.readAMDClock() {
++            self.callback(CPU_Frequency(value: frequency))
++            return
++        }
++        // User-authorized fixed display only when live telemetry is unavailable.
++        let hertz = sysctlByName("hw.cpufrequency")
++        guard hertz > 0 else { return }
++        self.callback(CPU_Frequency(value: Double(hertz) / 1_000_000))
++        #else
+         guard !self.isReading, !self.eCoreFreqs.isEmpty || !self.pCoreFreqs.isEmpty || !self.sCoreFreqs.isEmpty, self.channels != nil, self.subscription != nil else { return }
+         self.isReading = true
+         let minECoreFreq = Double(self.eCoreFreqs.min() ?? 0)
+@@ -418,6 +485,7 @@ public class FrequencyReader: Reader<CPU_Frequency> {
+             self.callback(CPU_Frequency(value: value, eCore: eFreq, pCore: pFreq, sCore: sFreq))
+             self.isReading = false
+         }
++        #endif
+     }
+     
+     private func calculateFrequencies(dict: CFDictionary, freqs: [Int32]) -> Double? {
+diff --git a/Modules/GPU/main.swift b/Modules/GPU/main.swift
+index 58a21cf..72263cf 100644
+--- a/Modules/GPU/main.swift
++++ b/Modules/GPU/main.swift
+@@ -41,6 +41,7 @@ public struct GPU_Info: Codable {
+     public var tilerUtilization: Double? = nil
+     public var aneUtilization: Double? = nil
+     public var fps: Double? = nil
++    public var nvidiaStatistics: [String: Int]? = nil
+     
+     init(id: String, type: GPU_type, IOClass: String, vendor: String? = nil, model: String, cores: Int?, utilization: Double? = nil, render: Double? = nil, tiler: Double? = nil) {
+         self.id = id
+@@ -178,6 +179,8 @@ public class GPU: Module {
+             return
+         }
+         
++        exportVK03("gpu", ["usage": utilization])
++        exportVK03Model(selectedGPU.model)
+         self.popupView.loadCallback(selectedGPU)
+         self.portalView.callback(selectedGPU)
+         self.notificationsView.usageCallback(utilization)
+@@ -225,3 +228,29 @@ public class GPU: Module {
+         }
+     }
+ }
++
++// Local telemetry export for the user's USB monitoring panel.
++private var vk03LastModelExport = Date.distantPast
++private func exportVK03Model(_ model: String) {
++    guard UserDefaults.standard.bool(forKey: "VK03PanelExport"), Date().timeIntervalSince(vk03LastModelExport) > 15 else { return }
++    let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Stats/VK03Panel", isDirectory: true)
++    do {
++        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
++        let bytes = try JSONSerialization.data(withJSONObject: ["model": model, "timestamp": Date().timeIntervalSince1970])
++        try bytes.write(to: directory.appendingPathComponent("gpu-info.json"), options: .atomic)
++        vk03LastModelExport = Date()
++    } catch {}
++}
++
++private func exportVK03(_ name: String, _ values: [String: Double]) {
++    guard UserDefaults.standard.bool(forKey: "VK03PanelExport"), values.values.allSatisfy({ $0.isFinite }) else { return }
++    let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
++        .appendingPathComponent("Stats/VK03Panel", isDirectory: true)
++    do {
++        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
++        var payload = values
++        payload["timestamp"] = Date().timeIntervalSince1970
++        let bytes = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
++        try bytes.write(to: directory.appendingPathComponent(name + ".json"), options: .atomic)
++    } catch { /* A disconnected panel must never interrupt Stats. */ }
++}
+diff --git a/Modules/GPU/popup.swift b/Modules/GPU/popup.swift
+index 9357cc7..1c8a282 100644
+--- a/Modules/GPU/popup.swift
++++ b/Modules/GPU/popup.swift
+@@ -13,9 +13,10 @@ import Cocoa
+ import Kit
+ 
+ internal class Popup: PopupWrapper {
++    private let usesNVAccel = fetchIOService("IOAccelerator")?.contains { ($0["IOClass"] as? String)?.lowercased() == "nvaccel" } ?? false
+     private let dashboardHeight: CGFloat = 90
+     private let chartHeight: CGFloat = 90 + Constants.Popup.separatorHeight
+-    private let detailsHeight: CGFloat = (22*7) + Constants.Popup.separatorHeight
++    private var detailsHeight: CGFloat { (22 * (self.usesNVAccel ? 8 : 7)) + Constants.Popup.separatorHeight }
+     
+     private let loadCache = PopupCache<GPU_Info>()
+     
+@@ -35,6 +36,7 @@ internal class Popup: PopupWrapper {
+     private var tilerField: NSTextField? = nil
+     private var aneField: NSTextField? = nil
+     private var fpsField: NSTextField? = nil
++    private var videoDecodeField: NSTextField? = nil
+     
+     public init(_ module: ModuleType) {
+         super.init(module, frame: NSRect(x: 0, y: 0, width: Constants.Popup.width, height: 0))
+@@ -127,11 +129,14 @@ internal class Popup: PopupWrapper {
+         container.spacing = 0
+         
+         self.modelField = popupRow(container, title: "\(localizedString("Model")):", value: "").1
+-        self.coresField = popupRow(container, title: "\(localizedString("Cores")):", value: localizedString("Unknown")).1
++        self.coresField = popupRow(container, title: self.usesNVAccel ? "CUDA 核心数:" : "\(localizedString("Cores")):", value: localizedString("Unknown")).1
+         self.utilizationField = popupRow(container, title: "\(localizedString("Utilization")):", value: "").1
+-        self.renderField = popupRow(container, title: "\(localizedString("Renderer utilization")):", value: "").1
+-        self.tilerField = popupRow(container, title: "\(localizedString("Tiler utilization")):", value: "").1
+-        self.aneField = popupRow(container, title: "\(localizedString("ANE utilization")):", value: "").1
++        self.renderField = popupRow(container, title: self.usesNVAccel ? "核心利用率:" : "\(localizedString("Renderer utilization")):", value: "").1
++        self.tilerField = popupRow(container, title: self.usesNVAccel ? "显存带宽利用率:" : "\(localizedString("Tiler utilization")):", value: "").1
++        self.aneField = popupRow(container, title: self.usesNVAccel ? "视频编码利用率:" : "\(localizedString("ANE utilization")):", value: "").1
++        if self.usesNVAccel {
++            self.videoDecodeField = popupRow(container, title: "视频解码利用率:", value: "驱动未提供").1
++        }
+         self.fpsField = popupRow(container, title: "\("FPS"):", value: "").1
+         
+         view.addSubview(separator)
+@@ -162,6 +167,29 @@ internal class Popup: PopupWrapper {
+             self.usageCircle?.display()
+             self.utilizationField?.stringValue = "\(Int(utilization*100))%"
+         }
++        if self.usesNVAccel {
++            let metrics = value.nvidiaStatistics ?? [:]
++            let entries: [(String, String, NSTextField?, PieChartView?)] = [
++                ("GPU Core Utilization %", "核心利用率", self.renderField, self.renderCircle),
++                ("GPU Memory Utilization %", "显存带宽利用率", self.tilerField, self.tilerCircle),
++                ("GPU Video Engine Utilization %", "视频编码利用率", self.aneField, nil),
++                ("GPU Video Decode Utilization %", "视频解码利用率", self.videoDecodeField, nil)
++            ]
++            for (key, title, field, circle) in entries {
++                if let percent = metrics[key] {
++                    field?.stringValue = "\(percent)%"
++                    circle?.toolTip = "\(title): \(percent)%"
++                    circle?.setValue(Double(percent) / 100)
++                    circle?.display()
++                } else {
++                    field?.stringValue = "驱动未提供"
++                }
++            }
++            self.tilerField?.toolTip = "显存带宽利用率，不是已分配显存容量。"
++            self.fpsField?.stringValue = value.fps.map { "\(Int($0.rounded()))" } ?? "驱动未提供"
++            self.chart?.display()
++            return
++        }
+         if let utilization = value.renderUtilization {
+             self.renderCircle?.toolTip = "\(localizedString("Renderer utilization")): \(Int(utilization.rounded(toPlaces: 2) * 100))%"
+             self.renderCircle?.setValue(utilization)
+diff --git a/Modules/GPU/reader.swift b/Modules/GPU/reader.swift
+index d805924..1730401 100644
+--- a/Modules/GPU/reader.swift
++++ b/Modules/GPU/reader.swift
+@@ -21,9 +21,27 @@ public struct device {
+ 
+ let vendors: [Data: String] = [
+     Data.init([0x86, 0x80, 0x00, 0x00]): "Intel",
+-    Data.init([0x02, 0x10, 0x00, 0x00]): "AMD"
++    Data.init([0x02, 0x10, 0x00, 0x00]): "AMD",
++    Data.init([0xde, 0x10, 0x00, 0x00]): "NVIDIA"
+ ]
+ 
++// IOPCIPrimaryMatch may describe a vendor-wide match, such as
++// "0x000010de&0x0000ffff", rather than a complete device/vendor ID.
++private func matchesPCI(_ pci: String, expression: String) -> Bool {
++    func number(_ value: Substring) -> UInt32? {
++        let text = value.lowercased()
++        return UInt32(text.hasPrefix("0x") ? String(text.dropFirst(2)) : text, radix: 16)
++    }
++    guard let device = number(Substring(pci)) else { return false }
++    return expression.split(whereSeparator: { $0.isWhitespace }).contains { term in
++        let parts = term.split(separator: "&", omittingEmptySubsequences: false)
++        guard (1...2).contains(parts.count), let value = number(parts[0]) else { return false }
++        if parts.count == 1 { return device == value }
++        guard let mask = number(parts[1]) else { return false }
++        return device & mask == value & mask
++    }
++}
++
+ private func maxANEPower(for platform: Platform?) -> Double {
+     switch platform {
+     case .m1, .m1Pro, .m1Max:       return 2.0
+@@ -123,10 +141,14 @@ internal class InfoReader: Reader<GPUs> {
+             let accMatch = (accelerator["IOPCIMatch"] as? String ?? accelerator["IOPCIPrimaryMatch"] as? String ?? "").lowercased()
+             
+             for (i, device) in devices.enumerated() {
+-                if accMatch.range(of: device.pci) != nil && !device.used {
++                if matchesPCI(device.pci, expression: accMatch) && !device.used {
+                     model = device.model
+                     vendor = device.vendor
+                     id = "\(model) #\(index)"
++                    // RTX 5070 desktop (10de:2f04): NVIDIA's published CUDA-core
++                    // specification, not a count of active cores.
++                    // https://www.nvidia.com/en-us/geforce/graphics-cards/50-series/rtx-5070-family/
++                    if device.pci == "0x2f0410de" { cores = 6144 }
+                     devices[i].used = true
+                     break
+                 }
+@@ -144,7 +166,7 @@ internal class InfoReader: Reader<GPUs> {
+             let coreClock: Int? = stats["Core Clock(MHz)"] as? Int ?? nil
+             let memoryClock: Int? = stats["Memory Clock(MHz)"] as? Int ?? nil
+             
+-            if ioClass == "nvaccelerator" || ioClass.contains("nvidia") { // nvidia
++            if ioClass == "nvaccelerator" || ioClass == "nvaccel" || ioClass.contains("nvidia") { // nvidia
+                 predictModel = "Nvidia Graphics"
+                 type = .discrete
+             } else if ioClass.contains("amd") { // amd
+@@ -236,6 +258,15 @@ internal class InfoReader: Reader<GPUs> {
+             if let value = memoryClock {
+                 self.gpus.list[idx].memoryClock = value
+             }
++            if ioClass == "nvaccel" {
++                var metrics: [String: Int] = [:]
++                for key in ["GPU Core Utilization %", "GPU Memory Utilization %", "GPU Video Engine Utilization %", "GPU Video Decode Utilization %"] {
++                    if let value = stats[key] as? Int, (0...100).contains(value) {
++                        metrics[key] = value
++                    }
++                }
++                self.gpus.list[idx].nvidiaStatistics = metrics
++            }
+         }
+         
+         #if arch(arm64)
+diff --git a/Modules/GPU/settings.swift b/Modules/GPU/settings.swift
+index 570d941..4bf6733 100644
+--- a/Modules/GPU/settings.swift
++++ b/Modules/GPU/settings.swift
+@@ -104,7 +104,8 @@ internal class Settings: NSStackView, Settings_v {
+         
+         DispatchQueue.main.async(execute: {
+             guard let button = self.button else { return }
+-            if button.menu?.items.count != list.count {
++            let previousKeys = button.menu?.items.map { $0.isSeparatorItem ? "separator" : ($0.representedObject as? String ?? "") }
++            if previousKeys != list.map({ $0.key }) {
+                 let menu = NSMenu()
+                 
+                 list.forEach { (item) in
+diff --git a/Modules/RAM/main.swift b/Modules/RAM/main.swift
+index 8baa4bd..ccb5538 100644
+--- a/Modules/RAM/main.swift
++++ b/Modules/RAM/main.swift
+@@ -149,6 +149,7 @@ public class RAM: Module {
+     
+     private func loadCallback(_ raw: RAM_Usage?) {
+         guard let value = raw, self.enabled else { return }
++        exportVK03("memory", ["used": value.used, "total": value.total])
+         
+         self.popupView.loadCallback(value)
+         self.portalView.callback(value)
+@@ -247,3 +248,17 @@ public class RAM: Module {
+         }
+     }
+ }
++
++// Local telemetry export for the user's USB monitoring panel.
++private func exportVK03(_ name: String, _ values: [String: Double]) {
++    guard UserDefaults.standard.bool(forKey: "VK03PanelExport"), values.values.allSatisfy({ $0.isFinite }) else { return }
++    let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
++        .appendingPathComponent("Stats/VK03Panel", isDirectory: true)
++    do {
++        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
++        var payload = values
++        payload["timestamp"] = Date().timeIntervalSince1970
++        let bytes = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
++        try bytes.write(to: directory.appendingPathComponent(name + ".json"), options: .atomic)
++    } catch { /* A disconnected panel must never interrupt Stats. */ }
++}
