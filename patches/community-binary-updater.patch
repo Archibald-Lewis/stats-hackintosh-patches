@@ -1,0 +1,28 @@
+diff --git a/Kit/plugins/Updater.swift b/Kit/plugins/Updater.swift
+index 786c371..bcfd62f 100644
+--- a/Kit/plugins/Updater.swift
++++ b/Kit/plugins/Updater.swift
+@@ -71,6 +71,11 @@ public class Updater {
+     }
+     
+     public func check(force: Bool = false, completion: @escaping (_ result: version_s?, _ error: Error?) -> Void) {
++        // Community binaries update manually to preserve the hardware patches.
++        if Bundle.main.object(forInfoDictionaryKey: "StatsCommunityBuild") as? Bool == true {
++            completion(nil, "Community build: download updates from the project release page.")
++            return
++        }
+         if !isConnectedToNetwork() {
+             completion(nil, "No internet connection")
+             return
+diff --git a/Stats/helpers.swift b/Stats/helpers.swift
+index b59550d..3c78b80 100644
+--- a/Stats/helpers.swift
++++ b/Stats/helpers.swift
+@@ -176,6 +176,7 @@ extension AppDelegate {
+     }
+     
+     internal func checkForNewVersion(silent: Bool = false) {
++        if Bundle.main.object(forInfoDictionaryKey: "StatsCommunityBuild") as? Bool == true { return }
+         updater.check { result, error in
+             if error != nil {
+                 debug("error updater.check(): \(error!.localizedDescription)")

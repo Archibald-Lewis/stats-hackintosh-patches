@@ -8,6 +8,13 @@
 
 这是针对 **Stats 3.0.23** 的补丁集。原项目是 [exelban/Stats](https://github.com/exelban/stats)，本仓库保留原作者署名和 MIT 许可证。
 
+## 预编译安装
+
+[下载 DMG 安装包](https://github.com/Archibald-Lewis/stats-hackintosh-patches/releases/latest) · [安装、签名与兼容性说明](docs/INSTALL.md)
+
+提供 AMD64 / x86_64 版，实测 AMD Ryzen 7 9700X + RTX 5070 黑苹果，ad-hoc 签名、未经 Apple 公证。
+
+
 ## 补了什么
 
 | 项目 | 修改 |
@@ -46,7 +53,7 @@ CPU、GPU、RAM 模块运行时，把对应读数写入：
 
 ## 验证与限制
 
-修改此前已在一台 AMD Zen 5 + RTX 5070、macOS 26 的黑苹果上编译运行，并用于 VK03 副屏。公开补丁的应用流程另以干净的上游源码检查。没有跨机型、跨 macOS 版本的覆盖验证。
+修改此前已在一台 AMD Ryzen 7 9700X（Zen 5，8 核 16 线程）+ RTX 5070、macOS 26 的黑苹果上编译运行，并用于 VK03 副屏。公开补丁的应用流程另以干净的上游源码检查。没有跨机型、跨 macOS 版本的覆盖验证。
 
 - AMD 实时频率依赖兼容的 SMCProcessorAMD 用户客户端。实时读数不可用时，当前实现会尝试读取 `hw.cpufrequency`，它可能是标称频率，不能当作实时频率。
 - 其他 AMD 系列的解码路径、不同 NVIDIA 型号及 Apple Silicon 尚未在本项目中实机验证。

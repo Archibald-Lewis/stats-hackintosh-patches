@@ -8,6 +8,13 @@ AMD frequency readings, community NVIDIA driver metrics, and a local JSON feed f
 
 This is a patch set for **Stats 3.0.23**, not a replacement for the upstream project. The original Stats MIT license and author attribution are preserved.
 
+## Prebuilt app
+
+[Download the DMG](https://github.com/Archibald-Lewis/stats-hackintosh-patches/releases/latest) · [Installation, signing and compatibility](docs/INSTALL.md)
+
+AMD64 / x86_64 build, tested on an AMD Ryzen 7 9700X + RTX 5070 Hackintosh. Intel CPU machines are unverified. Ad-hoc signed and not notarized.
+
+
 ## Changes
 
 - Read cached AMD per-core frequency registers through SMCProcessorAMD, including a Zen 5 decoding path, and display GHz.
@@ -32,7 +39,7 @@ Open `stats-source/Stats.xcodeproj` in Xcode and build using the upstream instru
 
 ## Status and limits
 
-The changes were previously built and used on one AMD Zen 5 / RTX 5070 Hackintosh running macOS 26, with a VK03 panel. The public patch is also checked against clean upstream source. Other hardware and OS combinations have not been validated by this project.
+The changes were previously built and used on one AMD Ryzen 7 9700X (Zen 5, 8 cores / 16 threads) / RTX 5070 Hackintosh running macOS 26, with a VK03 panel. The public patch is also checked against clean upstream source. Other hardware and OS combinations have not been validated by this project.
 
 Live AMD frequency requires a compatible SMCProcessorAMD user client. If that fails, this implementation tries `hw.cpufrequency`, which may be a nominal value rather than a live clock. NVIDIA fields depend on driver-provided properties. Memory bandwidth utilization is not allocated VRAM usage. The RTX 5070 CUDA core count is a static specification field.
 
